@@ -21,11 +21,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
+import android.database.Cursor;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
@@ -51,7 +54,7 @@ public class MyWatchFace extends CanvasWatchFaceService {
      * Update rate in milliseconds for interactive mode. We update once a second since seconds are
      * displayed in interactive mode.
      */
-    private static final long INTERACTIVE_UPDATE_RATE_MS = TimeUnit.SECONDS.toMillis(1);
+    private static final long INTERACTIVE_UPDATE_RATE_MS = TimeUnit.MINUTES.toMillis(30);
 
     /**
      * Handler message id for updating the time periodically in interactive mode.
@@ -101,6 +104,10 @@ public class MyWatchFace extends CanvasWatchFaceService {
 
         float mXOffset;
         float mYOffset;
+
+        private WeatherLoader weatherLoader;
+
+        private PlaceHolder placeHolder;
 
         /**
          * Whether the display supports fewer bits for each color in ambient mode. When true, we
@@ -256,6 +263,11 @@ public class MyWatchFace extends CanvasWatchFaceService {
                 canvas.drawRect(0, 0, bounds.width(), bounds.height(), mBackgroundPaint);
             }
 
+            if(placeHolder != null){
+                canvas.drawText("High: " + placeHolder.high, mXOffset, mYOffset - 50, mTextPaint);
+                canvas.drawText("Low: " + placeHolder.low, mXOffset, mYOffset + 50, mTextPaint);
+            }
+
             // Draw H:MM in ambient mode or H:MM:SS in interactive mode.
             mTime.setToNow();
             String text = mAmbient
@@ -289,11 +301,62 @@ public class MyWatchFace extends CanvasWatchFaceService {
         private void handleUpdateTimeMessage() {
             invalidate();
             if (shouldTimerBeRunning()) {
+
+                weatherLoader = new WeatherLoader();
+                weatherLoader.execute();
                 long timeMs = System.currentTimeMillis();
                 long delayMs = INTERACTIVE_UPDATE_RATE_MS
                         - (timeMs % INTERACTIVE_UPDATE_RATE_MS);
                 mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
+            } else {
+                weatherLoader.cancel(true);
             }
+        }
+
+        public void loadWeather(PlaceHolder placeHolder){
+            this.placeHolder = placeHolder;
+        }
+
+        public class WeatherLoader extends AsyncTask<Void, Void, PlaceHolder>{
+
+            @Override
+            protected Engine.PlaceHolder doInBackground(Void... params) {
+                PlaceHolder placeHolder = new PlaceHolder();
+
+                Uri uri = Uri.parse("content://weather/22963");
+                Cursor cursor = getContentResolver().query(
+                        uri,
+                        null,
+                        null,
+                        null,
+                        null
+                );
+
+                if(cursor != null){
+                    if(cursor.moveToFirst()){
+                        placeHolder.high = cursor.getInt(cursor.getColumnIndex("max"));
+                        placeHolder.low = cursor.getInt(cursor.getColumnIndex("min"));
+                        placeHolder.rId = 0;
+                    }
+                }
+
+                if(cursor != null){
+                    cursor.close();
+                }
+                return placeHolder;
+            }
+
+            @Override
+            protected void onPostExecute(Engine.PlaceHolder placeHolder) {
+                super.onPostExecute(placeHolder);
+
+            }
+        }
+
+        public class PlaceHolder{
+            public int high;
+            public int low;
+            public int rId;
         }
     }
 }
