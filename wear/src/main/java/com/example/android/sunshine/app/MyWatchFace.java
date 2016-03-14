@@ -22,6 +22,8 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -38,6 +40,17 @@ import android.text.format.Time;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
 
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.wearable.MessageApi;
+import com.google.android.gms.wearable.MessageEvent;
+import com.google.android.gms.wearable.Node;
+import com.google.android.gms.wearable.NodeApi;
+import com.google.android.gms.wearable.Wearable;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.lang.ref.WeakReference;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
@@ -54,7 +67,7 @@ public class MyWatchFace extends CanvasWatchFaceService {
      * Update rate in milliseconds for interactive mode. We update once a second since seconds are
      * displayed in interactive mode.
      */
-    private static final long INTERACTIVE_UPDATE_RATE_MS = TimeUnit.MINUTES.toMillis(30);
+    private static final long INTERACTIVE_UPDATE_RATE_MS = TimeUnit.SECONDS.toMillis(1);
 
     /**
      * Handler message id for updating the time periodically in interactive mode.
@@ -86,7 +99,8 @@ public class MyWatchFace extends CanvasWatchFaceService {
         }
     }
 
-    private class Engine extends CanvasWatchFaceService.Engine {
+    private class Engine extends CanvasWatchFaceService.Engine implements MessageApi.MessageListener, NodeApi.NodeListener,
+            GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener{
         final Handler mUpdateTimeHandler = new EngineHandler(this);
         boolean mRegisteredTimeZoneReceiver = false;
         Paint mBackgroundPaint;
@@ -105,9 +119,16 @@ public class MyWatchFace extends CanvasWatchFaceService {
         float mXOffset;
         float mYOffset;
 
-        private WeatherLoader weatherLoader;
+        GoogleApiClient googleApiClient;
+        private String maxDisplay;
+        private String minDisplay;
+        private Bitmap weatherArt;
 
-        private PlaceHolder placeHolder;
+        private boolean activeFace;
+
+
+        public static final String WEAR_MSG_PATH = "/wear/data/sunshine/020508";
+        public static final String READY_MESSAGE = "ready";
 
         /**
          * Whether the display supports fewer bits for each color in ambient mode. When true, we
@@ -135,11 +156,20 @@ public class MyWatchFace extends CanvasWatchFaceService {
             mTextPaint = createTextPaint(resources.getColor(R.color.digital_text));
 
             mTime = new Time();
+
+            googleApiClient = new GoogleApiClient.Builder(MyWatchFace.this)
+                    .addConnectionCallbacks(this)
+                    .addOnConnectionFailedListener(this)
+                    .addApi(Wearable.API)
+                    .build();
+
+            activeFace = true;
         }
 
         @Override
         public void onDestroy() {
             mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
+            activeFace = false;
             super.onDestroy();
         }
 
@@ -161,8 +191,11 @@ public class MyWatchFace extends CanvasWatchFaceService {
                 // Update time zone in case it changed while we weren't visible.
                 mTime.clear(TimeZone.getDefault().getID());
                 mTime.setToNow();
+                googleApiClient.connect();
             } else {
                 unregisterReceiver();
+                detachListeners();
+                googleApiClient.disconnect();
             }
 
             // Whether the timer should be running depends on whether we're visible (as well as
@@ -261,11 +294,17 @@ public class MyWatchFace extends CanvasWatchFaceService {
                 canvas.drawColor(Color.BLACK);
             } else {
                 canvas.drawRect(0, 0, bounds.width(), bounds.height(), mBackgroundPaint);
-            }
+                if(maxDisplay != null)
+                    canvas.drawText(maxDisplay, mXOffset, mYOffset +50, mTextPaint);
+                else canvas.drawText("45", mXOffset, mYOffset +50, mTextPaint);
 
-            if(placeHolder != null){
-                canvas.drawText("High: " + placeHolder.high, mXOffset, mYOffset - 50, mTextPaint);
-                canvas.drawText("Low: " + placeHolder.low, mXOffset, mYOffset + 50, mTextPaint);
+                if(minDisplay != null)
+                    canvas.drawText(maxDisplay, mXOffset +200, mYOffset +50, mTextPaint);
+                else canvas.drawText("22", mXOffset +200, mYOffset +50, mTextPaint);
+
+                if(weatherArt != null)
+                    canvas.drawBitmap(weatherArt, mXOffset + 100, mYOffset, mTextPaint);
+                else canvas.drawBitmap(BitmapFactory.decodeResource(getResources(), android.R.drawable.ic_btn_speak_now), mXOffset + 100, mYOffset, mTextPaint);
             }
 
             // Draw H:MM in ambient mode or H:MM:SS in interactive mode.
@@ -302,61 +341,93 @@ public class MyWatchFace extends CanvasWatchFaceService {
             invalidate();
             if (shouldTimerBeRunning()) {
 
-                weatherLoader = new WeatherLoader();
-                weatherLoader.execute();
                 long timeMs = System.currentTimeMillis();
                 long delayMs = INTERACTIVE_UPDATE_RATE_MS
                         - (timeMs % INTERACTIVE_UPDATE_RATE_MS);
                 mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
             } else {
-                weatherLoader.cancel(true);
             }
         }
 
-        public void loadWeather(PlaceHolder placeHolder){
-            this.placeHolder = placeHolder;
+
+        @Override
+        public void onConnected(Bundle bundle) {
+            Wearable.NodeApi.addListener(googleApiClient, this);
+            Wearable.MessageApi.addListener(googleApiClient, this);
+
+            if(activeFace){
+                sendReadyMessage();
+                activeFace = false;
+            }
+
+
         }
 
-        public class WeatherLoader extends AsyncTask<Void, Void, PlaceHolder>{
+        @Override
+        public void onConnectionSuspended(int i) {
+            detachListeners();
+        }
 
-            @Override
-            protected Engine.PlaceHolder doInBackground(Void... params) {
-                PlaceHolder placeHolder = new PlaceHolder();
+        private void detachListeners(){
+            Wearable.NodeApi.removeListener(googleApiClient, this);
+            Wearable.MessageApi.removeListener(googleApiClient, this);
+        }
 
-                Uri uri = Uri.parse("content://weather/22963");
-                Cursor cursor = getContentResolver().query(
-                        uri,
-                        null,
-                        null,
-                        null,
-                        null
-                );
+        @Override
+        public void onMessageReceived(MessageEvent messageEvent) {
+            if(messageEvent.getPath().equals(WEAR_MSG_PATH)){
+                try{
+                    byte[][] forecast = (byte[][]) deSerializeBytes(messageEvent.getData());
+                    weatherArt = BitmapFactory.decodeByteArray(forecast[0], 0, forecast[0].length);
+                    maxDisplay = new String(forecast[1]);
+                    minDisplay = new String(forecast[2]);
 
-                if(cursor != null){
-                    if(cursor.moveToFirst()){
-                        placeHolder.high = cursor.getInt(cursor.getColumnIndex("max"));
-                        placeHolder.low = cursor.getInt(cursor.getColumnIndex("min"));
-                        placeHolder.rId = 0;
+                } catch (IOException | ClassNotFoundException e){
+
+                }
+            }
+        }
+
+        @Override
+        public void onPeerConnected(Node node) {
+            sendReadyMessage();
+        }
+
+        @Override
+        public void onPeerDisconnected(Node node) {
+
+        }
+
+        @Override
+        public void onConnectionFailed(ConnectionResult connectionResult) {
+            detachListeners();
+        }
+
+        public Object deSerializeBytes(byte[] bytes) throws IOException, ClassNotFoundException
+        {
+            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(bytes);
+            ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
+            return objectInputStream.readObject();
+        }
+
+        private void sendReadyMessage(){
+            if(googleApiClient.isConnected()){
+                new Thread(){
+                    @Override
+                    public void run() {
+                        NodeApi.GetConnectedNodesResult nodesResult = Wearable.NodeApi.getConnectedNodes(googleApiClient).await();
+                        for(Node node : nodesResult.getNodes()){
+                            Wearable.MessageApi.sendMessage(
+                                    googleApiClient,
+                                    node.getId(),
+                                    WEAR_MSG_PATH,
+                                    READY_MESSAGE.getBytes()
+                                    ).await();
+                        }
                     }
-                }
-
-                if(cursor != null){
-                    cursor.close();
-                }
-                return placeHolder;
-            }
-
-            @Override
-            protected void onPostExecute(Engine.PlaceHolder placeHolder) {
-                super.onPostExecute(placeHolder);
-
+                }.start();
             }
         }
 
-        public class PlaceHolder{
-            public int high;
-            public int low;
-            public int rId;
-        }
     }
 }

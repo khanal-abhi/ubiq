@@ -22,6 +22,12 @@ Getting Started
 This sample uses the Gradle build system.  To build this project, use the
 "gradlew build" command or use "Import Project" in Android Studio.
 
+References
+----------
+I referenced *https://github.com/marcochin/Go-Ubiquitous-Sunshine-Watch-Face* 
+for my implementation of the WatchFace listener since it was rather difficult figuring out 
+where to put the listener implementation at first shot.
+
 Support
 -------
 
