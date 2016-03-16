@@ -169,7 +169,6 @@ public class MyWatchFace extends CanvasWatchFaceService {
         @Override
         public void onDestroy() {
             mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
-            activeFace = false;
             super.onDestroy();
         }
 
@@ -304,7 +303,7 @@ public class MyWatchFace extends CanvasWatchFaceService {
 
                 if(weatherArt != null)
                     canvas.drawBitmap(weatherArt, mXOffset + 100, mYOffset, mTextPaint);
-                else canvas.drawBitmap(BitmapFactory.decodeResource(getResources(), android.R.drawable.ic_btn_speak_now), mXOffset + 100, mYOffset, mTextPaint);
+                else canvas.drawBitmap(BitmapFactory.decodeResource(getResources(), R.drawable.ic_muzei), mXOffset + 100, mYOffset, mTextPaint);
             }
 
             // Draw H:MM in ambient mode or H:MM:SS in interactive mode.
